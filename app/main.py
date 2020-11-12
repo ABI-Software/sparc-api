@@ -12,6 +12,7 @@ from flask_cors import CORS
 from flask_marshmallow import Marshmallow
 from blackfynn import Blackfynn
 from app.config import Config
+from app.mapstate import MapState
 
 # from blackfynn import Blackfynn
 from app.serializer import ContactRequestSchema
@@ -37,7 +38,7 @@ s3 = boto3.client(
 )
 
 biolucida_lock = Lock()
-
+mapstate = MapState()
 
 class Biolucida(object):
     _token = ''
@@ -294,3 +295,22 @@ def authenticate_biolucida():
     if response.status_code == requests.codes.ok:
         content = response.json()
         bl.set_token(content['token'])
+
+#get the share link for the current map content
+@app.route("/map/getsharelink", methods=["POST"])
+def get_share_link():
+    state = request.json.get('state')
+    if state:
+      uuid = mapstate.pushState(state)
+      return jsonify({"uuid": uuid})
+    else:
+      abort(404, description="State not specified")
+
+#get the map state using the share link id
+@app.route("/map/getstate", methods=["POST"])
+def get_map_state():
+    uuid = request.json.get('uuid')
+    if uuid:
+      return jsonify({"state": mapstate.pullState(uuid)})
+    else:
+      abort(404, description="id not specified")
