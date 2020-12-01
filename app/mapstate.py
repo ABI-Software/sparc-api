@@ -10,7 +10,7 @@ class MapState:
   def __init__(self):
     '''Initialise PyZinc Objects'''
     self._conn = psycopg2.connect(
-      database="suppliers")
+      database="mapstate")
     #self.pushData()
     # create a cursor
 
