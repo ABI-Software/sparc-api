@@ -9,6 +9,7 @@ class Config(object):
     BLACKFYNN_API_SECRET = os.environ.get("BLACKFYNN_API_SECRET", "local-secret-key")
     BLACKFYNN_API_TOKEN = os.environ.get("BLACKFYNN_API_TOKEN", "local-api-key")
     BLACKFYNN_EMBARGO_TEAM_ID = os.environ.get("BLACKFYNN_EMBARGO_TEAM_ID")
+    DATABASE_URL = os.environ.get('DATABASE_URL')
     DISCOVER_API_HOST = os.environ.get(
         "DISCOVER_API_HOST", "https://api.blackfynn.io/discover"
     )
