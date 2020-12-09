@@ -37,7 +37,10 @@ s3 = boto3.client(
 )
 
 biolucida_lock = Lock()
-mapstate = MapState(Config.DATABASE_URL)
+try:
+  mapstate = MapState(Config.DATABASE_URL)
+except:
+  mapstate = None
 
 class Biolucida(object):
     _token = ''
@@ -372,22 +375,28 @@ def authenticate_biolucida():
 #get the share link for the current map content
 @app.route("/map/getsharelink", methods=["POST"])
 def get_share_link(commit = True):
-    state = request.json.get('state')
-    if state:
-      uuid = mapstate.pushState(state, commit)
-      return jsonify({"uuid": uuid})
+    if mapstate:
+        state = request.json.get('state')
+        if state:
+            uuid = mapstate.pushState(state, commit)
+            return jsonify({"uuid": uuid})
+        else:
+            abort(404, description="State not specified")
     else:
-      abort(404, description="State not specified")
+          abort(404, description="Database not available")
 
 #get the map state using the share link id
 @app.route("/map/getstate", methods=["POST"])
 def get_map_state():
-    uuid = request.json.get('uuid')
-    if uuid:
-      state = mapstate.pullState(uuid)
-      if state:
-        return jsonify({"state": mapstate.pullState(uuid)})
-      else:
-        abort(404, description="cannot find data with uuid")
+    if mapstate:
+        uuid = request.json.get('uuid')
+        if uuid:
+            state = mapstate.pullState(uuid)
+            if state:
+                return jsonify({"state": mapstate.pullState(uuid)})
+            else:
+                abort(404, description="cannot find data with uuid")
+        else:
+            abort(404, description="uuid is not available")
     else:
-      abort(404, description="uuid is not available")
+        abort(404, description="Database not available")
