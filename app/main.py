@@ -1,30 +1,29 @@
-import json
 import base64
+import boto3
+import json
 import logging
+import os
+import requests
 import atexit
-from threading import Lock
 from datetime import datetime, timedelta
 
-import boto3
-import requests
 from botocore.exceptions import ClientError
 from flask import Flask, abort, jsonify, request
 from flask_cors import CORS
 from flask_marshmallow import Marshmallow
 from pennsieve import Pennsieve
-from app.config import Config
 from app.dbtable import MapTable, ScaffoldTable
+
 from pennsieve.base import UnauthorizedException as PSUnauthorizedException
+from requests.auth import HTTPBasicAuth
+from scripts.email_sender import EmailSender
+from threading import Lock
+
+from app.config import Config
+from app.process_kb_results import create_facet_query, process_kb_results, create_filter_request
+from app.serializer import ContactRequestSchema
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
-from app.serializer import ContactRequestSchema
-from scripts.email_sender import EmailSender
-from app.process_kb_results import *
-from requests.auth import HTTPBasicAuth
-import os
-
-# from pymongo import MongoClient
 
 app = Flask(__name__)
 # set environment variable
@@ -44,24 +43,25 @@ s3 = boto3.client(
 )
 
 try:
-  os.environ["AWS_ACCESS_KEY_ID"] = Config.SPARC_PORTAL_AWS_KEY
-  os.environ["AWS_SECRET_ACCESS_KEY"] = Config.SPARC_PORTAL_AWS_SECRET
+    os.environ["AWS_ACCESS_KEY_ID"] = Config.SPARC_PORTAL_AWS_KEY
+    os.environ["AWS_SECRET_ACCESS_KEY"] = Config.SPARC_PORTAL_AWS_SECRET
 except:
-  pass
+    pass
 
 biolucida_lock = Lock()
 
 osparc_data = {}
 
 try:
-  maptable = MapTable(Config.DATABASE_URL)
+    maptable = MapTable(Config.DATABASE_URL)
 except:
-  maptable = None
+    maptable = None
 
 try:
-  scaffoldtable = ScaffoldTable(Config.DATABASE_URL)
+    scaffoldtable = ScaffoldTable(Config.DATABASE_URL)
 except:
-  scaffoldtable = None
+    scaffoldtable = None
+
 
 class Biolucida(object):
     _token = ''
@@ -94,6 +94,7 @@ class Biolucida(object):
 def resource_not_found(e):
     return jsonify(error=str(e)), 404
 
+
 @app.before_first_request
 def connect_to_pennsieve():
     global ps
@@ -114,13 +115,15 @@ def connect_to_pennsieve():
         logging.error("Unknown Error")
         logging.error(err)
 
+
 viewers_scheduler = BackgroundScheduler()
+
 
 @app.before_first_request
 def get_osparc_file_viewers():
     logging.info('Getting oSPARC viewers')
-    # Gets a list of default viewers
-    req = requests.get(url = f'{Config.OSPARC_API_HOST}/viewers/default')
+    # Gets a list of default viewers.
+    req = requests.get(url=f'{Config.OSPARC_API_HOST}/viewers/default')
     viewers = req.json()
     table = build_filetypes_table(viewers["data"])
     osparc_data["file_viewers"] = table
@@ -128,11 +131,16 @@ def get_osparc_file_viewers():
         logging.info('Starting scheduler for oSPARC viewers acquisition')
         viewers_scheduler.start()
 
-# Gets oSPARC viewers before the first request after startup and then once a day
+
+# Gets oSPARC viewers before the first request after startup and then once a day.
 viewers_scheduler.add_job(func=get_osparc_file_viewers, trigger="interval", days=1)
+
+
 def shutdown_scheduler():
     logging.info('Stopping scheduler for oSPARC viewers acquisition')
     viewers_scheduler.shutdown()
+
+
 atexit.register(shutdown_scheduler)
 
 
@@ -211,19 +219,72 @@ def direct_download_url(path):
     return resource
 
 
-# /search/: Returns scicrunch results for a given <search> query
-@app.route("/search/", defaults={'query': ''})
-@app.route("/search/<query>")
-def kb_search(query):
+@app.route("/search_dataset_by_mime_type/")
+def search_datasets():
+    mime_type = request.args.getlist('mime_type')[0]
+
+
+@app.route("/dataset_info_from_doi/")
+def get_dataset_info():
+    doi = request.args.get('doi')
+    query = {
+        "match": {
+            "item.curie": {
+                "query": f"DOI:{doi}",
+                "operator": "and"
+            }
+        }
+    }
+    # query = {
+    #             "match": {
+    #                 "item.identifier": {
+    #                     "query": f"{identifier}",
+    #                     "operator": "and"
+    #                 }
+    #             }
+    #         }
+
+    return dataset_search(query)
+
+
+def dataset_search(query):
     try:
-        response = requests.get(f'{Config.SCI_CRUNCH_HOST}/_search?q={query}&api_key={Config.KNOWLEDGEBASE_KEY}')
+        payload = {
+            "query": query
+        }
+        params = {
+            "api_key": Config.KNOWLEDGEBASE_KEY
+        }
+        response = requests.post(f'{Config.SCI_CRUNCH_HOST}/_search',
+                                 json=payload, params=params)
+
+        return process_kb_results(response.json())
+    except requests.exceptions.HTTPError as err:
+        logging.error(err)
+
+        return jsonify({'error': err})
+
+
+# /search/: Returns sci-crunch results for a given <search> query
+@app.route("/search/", defaults={'query': '', 'limit': 10, 'start': 0})
+@app.route("/search/<query>")
+def kb_search(query, limit=10, start=0):
+    try:
+        if request.args.get('limit') is not None:
+            limit = request.args.get('limit')
+        if request.args.get('query') is not None:
+            query = request.args.get('query')
+        if request.args.get('start') is not None:
+            start = request.args.get('start')
+
+        response = requests.get(f'{Config.SCI_CRUNCH_HOST}/_search?q={query}&size={limit}&from={start}&api_key={Config.KNOWLEDGEBASE_KEY}')
         return process_kb_results(response.json())
     except requests.exceptions.HTTPError as err:
         logging.error(err)
         return json.dumps({'error': err})
 
 
-# /filter-search/: Returns scicrunch results with optional params for facet filtering, sizing, and pagination
+# /filter-search/: Returns sci-crunch results with optional params for facet filtering, sizing, and pagination
 @app.route("/filter-search/", defaults={'query': ''})
 @app.route("/filter-search/<query>/")
 def filter_search(query):
@@ -235,7 +296,7 @@ def filter_search(query):
     # Create request
     data = create_filter_request(query, terms, facets, size, start)
 
-    # Send request to scicrunch
+    # Send request to sci-crunch
     try:
         response = requests.post(
             f'{Config.SCI_CRUNCH_HOST}/_search?api_key={Config.KNOWLEDGEBASE_KEY}',
@@ -243,38 +304,37 @@ def filter_search(query):
         results = process_kb_results(response.json())
     except requests.exceptions.HTTPError as err:
         logging.error(err)
-        return jsonify({'error': str(err), 'message': 'Scicrunch is not currently reachable, please try again later'}), 502
-    except json.JSONDecodeError as e:
-        return jsonify({'message': 'Could not parse Scicrunch output, please try again later',
+        return jsonify({'error': str(err), 'message': 'Sci-crunch is not currently reachable, please try again later'}), 502
+    except json.JSONDecodeError:
+        return jsonify({'message': 'Could not parse Sci-crunch output, please try again later',
                         'error': 'JSONDecodeError'}), 502
     return results
 
 
-# /get-facets/: Returns available scicrunch facets for filtering over given a <type> ('species', 'gender' etc)
-@app.route("/get-facets/<type>")
-def get_facets(type):
-
+# /get-facets/: Returns available sci-crunch facets for filtering over given a <type> ('species', 'gender' etc)
+@app.route("/get-facets/<type_>")
+def get_facets(type_):
     # Create facet query
-    type_map, data = create_facet_query(type)
+    type_map, data = create_facet_query(type_)
 
-    # Make a request for each scicrunch parameter
+    # Make a request for each sci-crunch parameter
     results = []
-    for path in type_map[type]:
-        data['aggregations'][f'{type}']['terms']['field'] = path
+    for path in type_map[type_]:
+        data['aggregations'][f'{type_}']['terms']['field'] = path
         response = requests.post(
             f'{Config.SCI_CRUNCH_HOST}/_search?api_key={Config.KNOWLEDGEBASE_KEY}',
             json=data)
         try:
             json_result = response.json()
             results.append(json_result)
-        except BaseException as e:
-            return jsonify({'message': 'Could not parse Scicrunch output, please try again later',
+        except json.JSONDecodeError:
+            return jsonify({'message': 'Could not parse Sci-crunch output, please try again later',
                             'error': 'JSONDecodeError'}), 502
 
     # Select terms from the results
     terms = []
     for result in results:
-        terms += result['aggregations'][f'{type}']['buckets']
+        terms += result['aggregations'][f'{type_}']['buckets']
 
     return jsonify(terms)
 
@@ -286,18 +346,18 @@ def inject_markdown(resp):
 
 
 def inject_template_data(resp):
-    id = resp.get("id")
+    id_ = resp.get("id")
     version = resp.get("version")
-    if id is None or version is None:
+    if id_ is None or version is None:
         return
 
     try:
         response = s3.get_object(
             Bucket="pennsieve-prod-discover-publish-use1",
-            Key="{}/{}/files/template.json".format(id, version),
+            Key="{}/{}/files/template.json".format(id_, version),
             RequestPayer="requester",
         )
-    except ClientError as e:
+    except ClientError:
         # If the file is not under folder 'files', check under folder 'packages'
         logging.warning(
             "Required file template.json was not found under /files folder, trying under /packages..."
@@ -305,11 +365,11 @@ def inject_template_data(resp):
         try:
             response = s3.get_object(
                 Bucket="pennsieve-prod-discover-publish-use1",
-                Key="{}/{}/packages/template.json".format(id, version),
+                Key="{}/{}/packages/template.json".format(id_, version),
                 RequestPayer="requester",
             )
-        except ClientError as e2:
-            logging.error(e2)
+        except ClientError as e:
+            logging.error(e)
             return
 
     template = response["Body"].read()
@@ -326,6 +386,7 @@ def inject_template_data(resp):
         "description": template_json.get("description"),
     }
 
+
 # Constructs a table with where keys are the normalized (lowercased) file types
 # and the values an array of possible viewers
 def build_filetypes_table(osparc_viewers):
@@ -339,16 +400,17 @@ def build_filetypes_table(osparc_viewers):
     return table
 
 
-@app.route("/sim/dataset/<id>")
-def sim_dataset(id):
+@app.route("/sim/dataset/<id_>")
+def sim_dataset(id_):
     if request.method == "GET":
-        req = requests.get("{}/datasets/{}".format(Config.DISCOVER_API_HOST, id))
+        req = requests.get("{}/datasets/{}".format(Config.DISCOVER_API_HOST, id_))
         if req.ok:
-            json = req.json()
-            inject_markdown(json)
-            inject_template_data(json)
-            return jsonify(json)
+            json_data = req.json()
+            inject_markdown(json_data)
+            inject_template_data(json_data)
+            return jsonify(json_data)
         abort(404, description="Resource not found")
+
 
 @app.route("/get_osparc_data")
 def get_osparc_data():
@@ -357,7 +419,6 @@ def get_osparc_data():
 
 @app.route("/project/<project_id>", methods=["GET"])
 def datasets_by_project_id(project_id):
-
     # 1 - call discover to get awards on all datasets (let put a very high limit to make sure we do not miss any)
 
     req = requests.get(
@@ -366,10 +427,10 @@ def datasets_by_project_id(project_id):
         )
     )
 
-    json = req.json()["records"]
+    records = req.json()["records"]
 
     # 2 - filter response to retain only awards with project_id
-    result = filter(lambda x: "award_id" in x["properties"] and x["properties"]["award_id"] == project_id, json)
+    result = filter(lambda x: "award_id" in x["properties"] and x["properties"]["award_id"] == project_id, records)
 
     ids = map(lambda x: str(x["datasetId"]), result)
 
@@ -386,6 +447,7 @@ def datasets_by_project_id(project_id):
     else:
         abort(404, description="Resource not found")
 
+
 @app.route("/get_owner_email/<int:owner_id>", methods=["GET"])
 def get_owner_email(owner_id):
     # Filter to find user based on provided int id
@@ -397,6 +459,29 @@ def get_owner_email(owner_id):
         abort(404, description="Owner not found")
     else:
         return jsonify({"email": res[0].email})
+
+
+@app.route("/file/", methods=["GET"])
+def fetch_file_from_s3():
+    # print(request.args)
+    doi = request.args.getlist('doi')
+    filepath = request.args.getlist('filepath')
+    print(doi, filepath)
+    # size = request.args.get('size')
+    # start = request.args.get('start')
+    abort(404, description="Not implemented")
+
+
+@app.route("/data_location/", methods=["GET"])
+def data_location_via_discover():
+    doi = request.args.getlist('doi')
+    print(doi)
+    print(ps)
+    print(dir(ps))
+    print(ps.datasets)
+    print(ps.get_dataset('10.26275', 'dwly-naxx'))
+    abort(404, description="Not implemented")
+
 
 @app.route("/thumbnail/<image_id>", methods=["GET"])
 def thumbnail_by_image_id(image_id, recursive_call=False):
@@ -415,7 +500,7 @@ def thumbnail_by_image_id(image_id, recursive_call=False):
     encoded_content = base64.b64encode(response.content)
     # Response from this endpoint is binary on success so the easiest thing to do is
     # check for an error response in encoded form.
-    if encoded_content == b'eyJzdGF0dXMiOiJBZG1pbiB1c2VyIGF1dGhlbnRpY2F0aW9uIHJlcXVpcmVkIHRvIHZpZXcvZWRpdCB1c2VyIGluZm8uIFlvdSBtYXkgbmVlZCB0byBsb2cgb3V0IGFuZCBsb2cgYmFjayBpbiB0byByZXZlcmlmeSB5b3VyIGNyZWRlbnRpYWxzLiJ9'\
+    if encoded_content == b'eyJzdGF0dXMiOiJBZG1pbiB1c2VyIGF1dGhlbnRpY2F0aW9uIHJlcXVpcmVkIHRvIHZpZXcvZWRpdCB1c2VyIGluZm8uIFlvdSBtYXkgbmVlZCB0byBsb2cgb3V0IGFuZCBsb2cgYmFjayBpbiB0byByZXZlcmlmeSB5b3VyIGNyZWRlbnRpYWxzLiJ9' \
             and not recursive_call:
         # Authentication failure, try again after resetting token.
         with biolucida_lock:
@@ -429,6 +514,13 @@ def thumbnail_by_image_id(image_id, recursive_call=False):
 @app.route("/image/<image_id>", methods=["GET"])
 def image_info_by_image_id(image_id):
     url = Config.BIOLUCIDA_ENDPOINT + "/image/{0}".format(image_id)
+    response = requests.request("GET", url)
+    return response.json()
+
+
+@app.route("/image_search/<dataset_id>", methods=["GET"])
+def image_search_by_dataset_id(dataset_id):
+    url = Config.BIOLUCIDA_ENDPOINT + "/imagemap/search_dataset/discover/{0}".format(dataset_id)
     response = requests.request("GET", url)
     return response.json()
 
@@ -449,8 +541,9 @@ def authenticate_biolucida():
         content = response.json()
         bl.set_token(content['token'])
 
+
 def get_share_link(table):
-    #Do not commit to database when testing
+    # Do not commit to database when testing
     commit = True
     if app.config["TESTING"]:
         commit = False
@@ -464,6 +557,7 @@ def get_share_link(table):
     else:
         abort(404, description="Database not available")
 
+
 def get_saved_state(table):
     if table:
         json_data = request.get_json()
@@ -476,30 +570,35 @@ def get_saved_state(table):
     else:
         abort(404, description="Database not available")
 
-#get the share link for the current map content
+
+# Get the share link for the current map content.
 @app.route("/map/getshareid", methods=["POST"])
 def get_map_share_link():
     return get_share_link(maptable)
 
-#get the map state using the share link id
+
+# Get the map state using the share link id.
 @app.route("/map/getstate", methods=["POST"])
 def get_map_state():
     return get_saved_state(maptable)
 
-#get the share link for the current map content
+
+# Get the share link for the current map content.
 @app.route("/scaffold/getshareid", methods=["POST"])
 def get_scaffold_share_link():
     return get_share_link(scaffoldtable)
 
-#get the map state using the share link id
+
+# Get the map state using the share link id.
 @app.route("/scaffold/getstate", methods=["POST"])
 def get_scaffold_state():
     return get_saved_state(scaffoldtable)
 
+
 @app.route("/tasks", methods=["POST"])
 def create_wrike_task():
     json_data = request.get_json()
-    if json_data and 'title' in json_data and 'description' in json_data :
+    if json_data and 'title' in json_data and 'description' in json_data:
         title = json_data["title"]
         description = json_data["description"]
         hed = {'Authorization': 'Bearer ' + Config.WRIKE_TOKEN}
@@ -509,10 +608,12 @@ def create_wrike_task():
             "title": title,
             "description": description,
             "customStatus": "IEADBYQEJMBJODZU",
-            "followers": [Config.CCB_HEAD_WRIKE_ID,Config.DAT_CORE_TECH_LEAD_WRIKE_ID,Config.MAP_CORE_TECH_LEAD_WRIKE_ID,Config.K_CORE_TECH_LEAD_WRIKE_ID,Config.SIM_CORE_TECH_LEAD_WRIKE_ID,Config.MODERATOR_WRIKE_ID],
-            "responsibles": [Config.CCB_HEAD_WRIKE_ID,Config.DAT_CORE_TECH_LEAD_WRIKE_ID,Config.MAP_CORE_TECH_LEAD_WRIKE_ID,Config.K_CORE_TECH_LEAD_WRIKE_ID,Config.SIM_CORE_TECH_LEAD_WRIKE_ID,Config.MODERATOR_WRIKE_ID],
-            "follow":False,
-            "dates":{"type":"Backlog"}
+            "followers": [Config.CCB_HEAD_WRIKE_ID, Config.DAT_CORE_TECH_LEAD_WRIKE_ID, Config.MAP_CORE_TECH_LEAD_WRIKE_ID, Config.K_CORE_TECH_LEAD_WRIKE_ID,
+                          Config.SIM_CORE_TECH_LEAD_WRIKE_ID, Config.MODERATOR_WRIKE_ID],
+            "responsibles": [Config.CCB_HEAD_WRIKE_ID, Config.DAT_CORE_TECH_LEAD_WRIKE_ID, Config.MAP_CORE_TECH_LEAD_WRIKE_ID, Config.K_CORE_TECH_LEAD_WRIKE_ID,
+                             Config.SIM_CORE_TECH_LEAD_WRIKE_ID, Config.MODERATOR_WRIKE_ID],
+            "follow": False,
+            "dates": {"type": "Backlog"}
         }
 
         resp = requests.post(
@@ -532,6 +633,7 @@ def create_wrike_task():
     else:
         abort(400, description="Missing title or description")
 
+
 @app.route("/mailchimp", methods=["POST"])
 def subscribe_to_mailchimp():
     json_data = request.get_json()
@@ -539,13 +641,13 @@ def subscribe_to_mailchimp():
         email_address = json_data["email_address"]
         first_name = json_data['first_name']
         last_name = json_data['last_name']
-        auth=HTTPBasicAuth('AnyUser', Config.MAILCHIMP_API_KEY)
+        auth = HTTPBasicAuth('AnyUser', Config.MAILCHIMP_API_KEY)
         url = 'https://us2.api.mailchimp.com/3.0/lists/c81a347bd8/members'
 
         data = {
             "email_address": email_address,
             "status": "subscribed",
-            "merge_fields" : {
+            "merge_fields": {
                 "FNAME": first_name,
                 "LNAME": last_name
             }
