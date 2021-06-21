@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import requests
+import mimetypes
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from botocore.exceptions import ClientError
@@ -269,6 +270,7 @@ def extract_thumbnail_from_xml_file():
 # other required files.
 @app.route("/s3-resource/<path:path>")
 def direct_download_url(path):
+
     head_response = s3.head_object(
         Bucket=Config.S3_BUCKET_NAME,
         Key=path,
@@ -286,7 +288,11 @@ def direct_download_url(path):
         RequestPayer="requester"
     )
     resource = response["Body"].read()
-    if response.get('ContentType', 'unknown') == 'application/octet-stream':
+
+    # all content type is octet-stream at this moment cause the following undesired
+    # problem for the following 
+    if mimetypes.guess_type(path, strict=True)[0] != 'application/json' and \
+        response.get('ContentType', 'unknown') == 'application/octet-stream':
         return base64.b64encode(resource)
 
     return resource

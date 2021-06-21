@@ -52,7 +52,7 @@ def create_facet_query(type_):
     type_map = {
         'species': ['organisms.primary.species.name.aggregate', 'organisms.sample.species.name.aggregate'],
         'gender': ['attributes.subject.sex.value'],
-        'genotype': ['anatomy.organ.name.aggregate']
+        'organ': ['anatomy.organ.name.aggregate']
     }
 
     data = {
@@ -96,7 +96,7 @@ def create_filter_request(query, terms, facets, size, start):
     type_map = {
         'species': ['organisms.primary.species.name.aggregate', 'organisms.sample.species.name'],
         'gender': ['attributes.subject.sex.value', 'attributes.sample.sex.value'],
-        'genotype': ['anatomy.organ.name.aggregate']
+        'organ': ['anatomy.organ.name.aggregate']
     }
 
     # Data structure of a sci-crunch search
