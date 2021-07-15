@@ -565,3 +565,36 @@ def subscribe_to_mailchimp():
             return resp.json()
     else:
         abort(400, description="Missing email_address, first_name or last_name")
+
+# Get list of available name / curie pair
+@app.route("/get-organ-curies/", defaults={'query': ''})
+@app.route("/get-organ-curies/<query>/")
+def get_available_uberonids(query):
+
+    species = request.args.getlist('species')
+
+    requestBody = get_request_body_for_curies(species)
+
+    result = {
+        'uberon': {
+            'array': []
+        }
+    }
+
+    response = requests.post(
+        f'{Config.SCI_CRUNCH_HOST}/_search?api_key={Config.KNOWLEDGEBASE_KEY}',
+        json=requestBody)
+    try:
+        json_result = response.json()
+        for item in json_result['aggregations']['organ']["buckets"]:
+            if item['key']['id'] and item['key']['name']:
+                pair = {
+                    'id': item['key']['id'], 
+                    'name': item['key']['name']
+                }
+                result['uberon']['array'].append(pair)
+    except BaseException as e:
+        return jsonify({'message': 'Could not parse SciCrunch output, please try again later',
+                'error': 'JSONDecodeError'}), 502
+
+    return jsonify(result)

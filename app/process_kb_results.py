@@ -173,3 +173,42 @@ def get_attributes(attributes, dataset):
         found_attr[k] = key_attr
     return found_attr
 
+# get the request body for requesting list of uberon ids
+def get_request_body_for_curies(species):
+
+    body = {
+        "from": 0,
+        "size": 0,
+        "aggregations": {
+            "organ": {
+                "composite": {
+                    "sources": [
+                        {"id": {"terms": {"field": "anatomy.organ.curie.aggregate"}}},
+                        {"name": {"terms": {"field": "anatomy.organ.name.aggregate"}}} 
+                    ],
+                    "size": 200
+                }
+            }
+        }
+    }
+
+    # Construct the query if there is a list of species 
+    if len(species) > 0:
+        query = {
+            "query_string": {
+                "fields": [
+                    "*species.name"
+                ],
+            }
+        }
+
+        query_string = ''
+        
+        for item in species:
+            if item != species[0]:
+                query_string += ' OR '
+            query_string += f"({item})"
+        query["query_string"]["query"]  = query_string
+        body['query'] = query
+    
+    return body
