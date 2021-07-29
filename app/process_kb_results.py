@@ -26,7 +26,7 @@ def create_doi_request(doi):
                 "should": [],
                 "filter": {
                     "term": {
-                        "_id": doi
+                        "_id": f'DOI:{doi}'
                     }
                 }
             }
@@ -42,7 +42,8 @@ def create_facet_query(type):
     type_map = {
         'species': ['organisms.primary.species.name.aggregate', 'organisms.sample.species.name.aggregate'],
         'gender': ['attributes.subject.sex.value'],
-        'genotype': ['anatomy.organ.name.aggregate']
+        'genotype': ['anatomy.organ.name.aggregate'],
+        'organ': ['anatomy.organ.name.aggregate']
     }
 
     data = {
@@ -86,7 +87,8 @@ def create_filter_request(query, terms, facets, size, start):
     type_map = {
         'species': ['organisms.primary.species.name.aggregate', 'organisms.sample.species.name'],
         'gender': ['attributes.subject.sex.value', 'attributes.sample.sex.value'],
-        'genotype': ['anatomy.organ.name.aggregate']
+        'genotype': ['anatomy.organ.name.aggregate'],
+        'organ': ['anatomy.organ.name.aggregate']
     }
 
     # Data structure of a scicrunch search
@@ -181,6 +183,20 @@ def find_scaffold_json_files(obj_list):
     if not obj_list:
         return obj_list
     return [obj for obj in obj_list if obj.get('additional_mimetype', {}).get('name', 'none') == 'inode/vnd.abi.scaffold+file']
+
+
+attributes = {
+    'scaffolds': ['scaffolds'],
+    'samples': ['attributes','sample','subject'],
+    'name': ['item','name'],
+    'identifier': ['item', 'identifier'],
+    'uri': ['distributions', 'current', 'uri'],
+    'updated': ['dates', 'updated'],
+    'organs': ['anatomy', 'organ'],
+    'contributors': ['contributors'],
+    'doi': ['item', 'curie'],
+    'csvFiles': ['objects']
+}
 
 
 # get_attributes: Use 'attributes' (defined at top of this document) to step through the large scicrunch result dict
